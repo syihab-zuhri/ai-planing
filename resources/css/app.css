@@ -1,0 +1,142 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------------------------------------------------------------
+   Design tokens (DSD.md §2) — custom properties untuk raw values
+   yang tidak masuk Tailwind theme (font sizes, line-heights,
+   shadow rgba, dll).
+   --------------------------------------------------------------- */
+@layer base {
+    :root {
+        --color-primary: #0C2D5C;
+        --color-primary-hover: #185FA5;
+        --color-accent: #BA7517;
+        --color-success: #16A34A;
+        --color-warning: #D97706;
+        --color-danger: #DC2626;
+        --color-bg: #FFFFFF;
+        --color-bg-alt: #F8FAFC;
+        --color-text: #0F172A;
+        --color-text-muted: #64748B;
+        --color-border: #E2E8F0;
+
+        --font-sans: 'Inter', system-ui, sans-serif;
+        --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+        --radius-sm: 4px;
+        --radius-md: 6px;
+        --radius-lg: 8px;
+
+        --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+        --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.07);
+        --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.1);
+
+        --text-xs: 0.75rem;     /* 12px */
+        --text-sm: 0.875rem;    /* 14px */
+        --text-base: 1rem;      /* 16px */
+        --text-lg: 1.125rem;    /* 18px */
+        --text-xl: 1.25rem;     /* 20px */
+        --text-2xl: 1.5rem;     /* 24px */
+        --text-3xl: 1.875rem;   /* 30px */
+    }
+
+    html {
+        font-family: var(--font-sans);
+        color: var(--color-text);
+        background-color: var(--color-bg);
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+    }
+
+    body {
+        font-size: var(--text-base);
+        line-height: 1.6;
+    }
+
+    /* Focus ring — WCAG 2.1 AA, visible */
+    :focus-visible {
+        outline: 2px solid var(--color-primary);
+        outline-offset: 2px;
+        border-radius: 2px;
+    }
+
+    /* Reduced motion — DSD §13 */
+    @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+            animation-duration: 0.01ms !important;
+            transition-duration: 0.01ms !important;
+        }
+    }
+}
+
+@layer components {
+    /* Tombol primer — bg-primary, teks putih, hover bg-primary-hover */
+    .btn-primary {
+        @apply inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-white bg-primary rounded-md transition-colors duration-150;
+    }
+    .btn-primary:hover {
+        background-color: var(--color-primary-hover);
+    }
+    .btn-primary:disabled {
+        @apply opacity-50 cursor-not-allowed;
+    }
+
+    /* Tombol sekunder — bg-alt, border, teks text */
+    .btn-secondary {
+        @apply inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-text bg-bg-alt border border-border rounded-md transition-colors duration-150;
+    }
+    .btn-secondary:hover {
+        @apply bg-white;
+    }
+
+    /* Tombol ghost — teks, hover bg-alt */
+    .btn-ghost {
+        @apply inline-flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium text-text rounded-md transition-colors duration-150;
+    }
+    .btn-ghost:hover {
+        @apply bg-bg-alt;
+    }
+
+    /* Tombol danger */
+    .btn-danger {
+        @apply inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-white bg-danger rounded-md transition-colors duration-150;
+    }
+
+    /* Card */
+    .card {
+        @apply bg-white border border-border rounded-md p-6 transition-shadow duration-150;
+    }
+    .card-hover:hover {
+        box-shadow: var(--shadow-sm);
+    }
+
+    /* Input field */
+    .input-field {
+        @apply w-full px-3 py-2 text-sm bg-white border border-border rounded-md text-text placeholder-text-muted transition-colors duration-150;
+    }
+    .input-field:focus {
+        outline: 2px solid var(--color-primary);
+        outline-offset: 1px;
+        border-color: var(--color-primary);
+    }
+    .input-field.is-invalid {
+        border-color: var(--color-danger);
+    }
+    .input-field:disabled {
+        @apply bg-bg-alt text-text-muted cursor-not-allowed;
+    }
+
+    /* Label */
+    .form-label {
+        @apply block text-sm font-medium text-text mb-1.5;
+    }
+    .form-helper {
+        @apply mt-1.5 text-xs text-text-muted;
+    }
+    .form-error {
+        @apply mt-1.5 text-xs text-danger font-medium;
+    }
+}
