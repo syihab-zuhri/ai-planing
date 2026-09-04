@@ -121,9 +121,9 @@ class GenerateApiTest extends TestCase
     {
         $this->seedMinimalProject();
 
+        // Path traversal: route constraint rejects '/' so this returns 404
         $this->postJson('/api/generate/retry/../evil.md')
-            ->assertStatus(422)
-            ->assertJsonPath('error.code', 'VALIDATION_FAILED');
+            ->assertNotFound();
 
         $this->postJson('/api/generate/retry/UNKNOWN.md')
             ->assertStatus(422)
@@ -143,17 +143,16 @@ class GenerateApiTest extends TestCase
     }
 
     /**
-     * GET /api/generate/stream → snapshot status job.
+     * GET /api/generate/stream → SSE response with progress + complete events.
      */
-    public function test_stream_returns_jobs_snapshot(): void
+    public function test_stream_returns_sse_response(): void
     {
         $this->seedMinimalProject();
-        $this->postJson('/api/generate/start')->assertOk();
 
-        $response = $this->getJson('/api/generate/stream')->assertOk();
+        $response = $this->get('/api/generate/stream');
 
-        $response->assertJsonStructure(['project_id', 'jobs']);
-        $this->assertNotEmpty($response->json('jobs'));
+        $response->assertOk();
+        $response->assertHeader('Content-Type', 'text/event-stream; charset=utf-8');
     }
 
     /* -------------------------------------------------------------- */

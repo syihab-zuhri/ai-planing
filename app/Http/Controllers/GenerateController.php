@@ -9,6 +9,7 @@ use App\Services\WizardService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
  * GenerateController — endpoint pipeline generation dokumen.
@@ -151,25 +152,134 @@ class GenerateController extends Controller
     /**
      * API-GENERATE-STREAM (GET /api/generate/stream).
      *
-     * Phase 1: kembalikan snapshot status (SSE scaffolding menyusul).
+     * SSE endpoint — streams progress events for each completed document,
+     * a final 'complete' event when the batch finishes, and 'error' events
+     * for failures.
+     *
+     * Event types:
+     *   - progress: emitted per completed/failed doc  {doc_id, status, current, total}
+     *   - complete: emitted once when all docs processed {project_id, total, done, failed}
+     *   - error:    emitted on fatal/project-level errors {code, message}
+     *
+     * Timeout: 120 seconds max.
      */
-    public function stream(Request $request)
+    public function stream(Request $request): StreamedResponse|JsonResponse
     {
         $sessionId = $request->session()->getId();
         $project = $this->wizard->getState($sessionId);
 
         if (!$project) {
-            return response()->json(['error' => ['code' => 'VALIDATION_FAILED', 'message' => 'Project not found']], 404);
+            return response()->json([
+                'error' => ['code' => 'VALIDATION_FAILED', 'message' => 'Project not found'],
+            ], 404);
         }
 
-        $jobs = AiJob::where('project_id', $project->id)
-            ->orderBy('created_at')
-            ->get(['doc_id', 'status', 'token_in', 'token_out', 'latency_ms']);
+        // Guard: state wizard minimal harus sudah ada intake.
+        $state = $project->draft_state ?? [];
+        if (empty($state['intake']['project_name'])) {
+            return response()->json([
+                'error' => [
+                    'code'    => 'VALIDATION_FAILED',
+                    'message' => 'Wizard belum lengkap. Selesaikan Step 1-4 terlebih dahulu.',
+                ],
+            ], 422);
+        }
 
-        return response()->json([
-            'project_id' => $project->id,
-            'jobs'       => $jobs,
+        $controller = $this;
+
+        return new StreamedResponse(function () use ($project, $controller) {
+            set_time_limit(120);
+
+            $total = count(self::DOCUMENT_IDS);
+            $current = 0;
+            $doneCount = 0;
+            $failedCount = 0;
+
+            foreach (self::DOCUMENT_IDS as $docId) {
+                $current++;
+
+                try {
+                    $result = $controller->streamRunOne($project, $docId);
+
+                    if ($result['status'] === 'done') {
+                        $doneCount++;
+
+                        $controller->sendSseEvent('progress', [
+                            'doc_id'  => $docId,
+                            'status'  => 'done',
+                            'current' => $current,
+                            'total'   => $total,
+                        ]);
+                    } else {
+                        $failedCount++;
+
+                        $controller->sendSseEvent('error', [
+                            'code'    => 'GENERATION_FAILED',
+                            'message' => $result['error'] ?? 'Unknown error',
+                            'doc_id'  => $docId,
+                            'current' => $current,
+                            'total'   => $total,
+                        ]);
+                    }
+                } catch (\Throwable $e) {
+                    $failedCount++;
+
+                    $controller->sendSseEvent('error', [
+                        'code'    => 'GENERATION_FAILED',
+                        'message' => substr($e->getMessage(), 0, 200),
+                        'doc_id'  => $docId,
+                        'current' => $current,
+                        'total'   => $total,
+                    ]);
+                }
+            }
+
+            // Set Gate B if all succeeded.
+            if ($doneCount === $total) {
+                $project->setGate('B');
+                $project->save();
+            }
+
+            $controller->sendSseEvent('complete', [
+                'project_id' => $project->id,
+                'total'      => $total,
+                'done'       => $doneCount,
+                'failed'     => $failedCount,
+            ]);
+        }, 200, [
+            'Content-Type'      => 'text/event-stream',
+            'Cache-Control'     => 'no-cache',
+            'Connection'        => 'keep-alive',
+            'X-Accel-Buffering' => 'no',
         ]);
+    }
+
+    /**
+     * Send a single SSE event to the output stream.
+     *
+     * Format: "event: {type}\ndata: {json}\n\n"
+     */
+    public function sendSseEvent(string $event, array $data): void
+    {
+        echo "event: {$event}\n";
+        echo 'data: ' . json_encode($data, JSON_UNESCAPED_UNICODE) . "\n\n";
+
+        // Flush for real HTTP connections (safe no-op if no OB active).
+        if (!app()->runningUnitTests()) {
+            if (ob_get_level()) {
+                ob_flush();
+            }
+            flush();
+        }
+    }
+
+    /**
+     * Run a single document generation — public wrapper around runOne()
+     * so the streaming closure can access it.
+     */
+    public function streamRunOne(Project $project, string $docId): array
+    {
+        return $this->runOne($project, $docId);
     }
 
     /* -------------------------------------------------------------- */
