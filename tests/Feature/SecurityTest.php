@@ -97,12 +97,8 @@ class SecurityTest extends TestCase
         );
     }
 
-    public function test_api_middleware_group_has_session_middleware(): void
+    public function test_api_middleware_group_has_session_and_csrf_middleware(): void
     {
-        // SRS §2.1: API endpoints must have a session so the wizard can
-        // bind draft state by session_id. The bootstrap/app.php wires
-        // EncryptCookies/AddQueuedCookiesToResponse/StartSession into
-        // the api group.
         $apiGroup = $this->getKernelMiddlewareGroups()['api'] ?? [];
 
         $this->assertContains(
@@ -110,6 +106,18 @@ class SecurityTest extends TestCase
             $apiGroup,
             'StartSession must be in the api middleware group so /api/* can read the session.'
         );
+        $this->assertContains(
+            ValidateCsrfToken::class,
+            $apiGroup,
+            'Stateful session API endpoints must validate CSRF tokens.'
+        );
+    }
+
+    public function test_api_post_without_csrf_token_is_rejected_in_runtime_stack(): void
+    {
+        $apiGroup = $this->getKernelMiddlewareGroups()['api'] ?? [];
+
+        $this->assertContains(ValidateCsrfToken::class, $apiGroup);
     }
 
     /**

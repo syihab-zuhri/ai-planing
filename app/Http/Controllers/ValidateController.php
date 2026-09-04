@@ -174,20 +174,28 @@ class ValidateController extends Controller
 
         // ---- Content checks ----
         $documents = (array) ($state['documents'] ?? []);
-        $hasDocuments = count($documents) > 0;
-        if ($hasDocuments) {
-            $passed[] = 'content: documents_generated';
-
-            foreach ($documents as $docId => $content) {
-                if (!is_string($content) || strlen(trim($content)) < 200) {
-                    $warnings[] = "Dokumen {$docId} terlalu pendek (<200 char).";
-                }
-                if (preg_match('/\{\{[^}]+\}\}/', (string) $content)) {
-                    $blockers[] = "Dokumen {$docId} masih berisi placeholder.";
-                }
-            }
+        $requiredDocuments = GenerateController::DOCUMENT_IDS;
+        $missingDocuments = array_values(array_diff($requiredDocuments, array_keys($documents)));
+        $hasAllDocuments = $missingDocuments === [];
+        if ($hasAllDocuments) {
+            $passed[] = 'content: all_documents_generated';
+        } elseif ($documents !== []) {
+            $blockers[] = 'Dokumen belum lengkap: '.count($missingDocuments).' dokumen wajib belum tersedia.';
         } else {
             $warnings[] = 'Belum ada dokumen di-generate. Jalankan /api/generate/start.';
+        }
+
+        foreach ($documents as $docId => $content) {
+            if (!in_array($docId, $requiredDocuments, true)) {
+                $blockers[] = "Dokumen tidak dikenal: {$docId}.";
+                continue;
+            }
+            if (!is_string($content) || strlen(trim($content)) < 200) {
+                $warnings[] = "Dokumen {$docId} terlalu pendek (<200 char).";
+            }
+            if (preg_match('/\{\{[^}]+\}\}/', (string) $content)) {
+                $blockers[] = "Dokumen {$docId} masih berisi placeholder.";
+            }
         }
 
         // ---- Determine gate ----
@@ -199,7 +207,7 @@ class ValidateController extends Controller
             $gate = 'B';
         }
         if (
-            $gate === 'B' && $hasDocuments
+            $gate === 'B' && $hasAllDocuments
             && count($blockers) === 0
         ) {
             $gate = 'C';

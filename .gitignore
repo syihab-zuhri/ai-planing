@@ -8,6 +8,11 @@
 /node_modules/
 /vendor/
 /backups/
+*.bak
+*.bak.*
+*.backup
+*.dump
+*.sql
 /public/hot
 /public/storage
 /storage/*.key

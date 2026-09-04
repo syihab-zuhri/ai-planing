@@ -87,9 +87,13 @@ class GenerateController extends Controller
             $results[] = $this->runOne($project, $docId);
         }
 
-        // Naikkan gate ke B setelah generate selesai (minimal).
-        $project->setGate('B');
-        $project->save();
+        $allSucceeded = count($results) === count(self::DOCUMENT_IDS)
+            && collect($results)->every(fn (array $result) => $result['status'] === 'done');
+
+        if ($allSucceeded) {
+            $project->setGate('B');
+            $project->save();
+        }
 
         return response()->json([
             'batch_id'  => $batchId,
@@ -104,6 +108,15 @@ class GenerateController extends Controller
      */
     public function retry(Request $request, string $docId): JsonResponse
     {
+        if (!in_array($docId, self::DOCUMENT_IDS, true)) {
+            return response()->json([
+                'error' => [
+                    'code' => 'VALIDATION_FAILED',
+                    'message' => 'Document ID tidak valid.',
+                ],
+            ], 422);
+        }
+
         $sessionId = $request->session()->getId();
         $project = $this->wizard->getState($sessionId);
         if (!$project) {

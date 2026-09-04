@@ -19,14 +19,17 @@ class SecretRedactionProcessor
         '/Bearer\s+[A-Za-z0-9_\-\.=]{10,}/i',
         '/(?<![A-Za-z0-9])AIza[0-9A-Za-z_\-]{30,}/',
         '/(?<![A-Za-z0-9])ghp_[A-Za-z0-9]{30,}/',
+        '/([?&](?:api[_-]?key|access[_-]?token|token|secret|password)=)[^&\s]+/i',
+        '/\b(?:API_KEY|ACCESS_TOKEN|CLIENT_SECRET|DB_PASSWORD|PASSWORD|TOKEN)\s*=\s*[^\s,;]+/i',
     ];
 
     private const SENSITIVE_FIELDS = [
         'api_key', 'apikey', 'api-key',
-        'password', 'passwd',
-        'secret',
+        'password', 'passwd', 'db_password',
+        'secret', 'client_secret',
         'token',
-        'authorization',
+        'authorization', 'x-api-key',
+        'cookie', 'set-cookie',
         'access_token', 'refresh_token', 'private_token',
         'ninerouter_api_key', 'openai_api_key', 'openai_compat_api_key',
         'session_cookie',

@@ -117,6 +117,19 @@ class GenerateApiTest extends TestCase
         $this->assertSame($before + 1, $after);
     }
 
+    public function test_retry_rejects_unknown_document_id(): void
+    {
+        $this->seedMinimalProject();
+
+        $this->postJson('/api/generate/retry/../evil.md')
+            ->assertStatus(422)
+            ->assertJsonPath('error.code', 'VALIDATION_FAILED');
+
+        $this->postJson('/api/generate/retry/UNKNOWN.md')
+            ->assertStatus(422)
+            ->assertJsonPath('error.code', 'VALIDATION_FAILED');
+    }
+
     /**
      * POST /api/generate/cancel → no-op jika tidak ada job running.
      */

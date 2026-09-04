@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Http\Controllers\GenerateController;
 use App\Models\Project;
 use Tests\TestCase;
 
@@ -49,6 +50,20 @@ class ValidateApiTest extends TestCase
 
         $response->assertJsonPath('gate', 'B');
         $this->assertSame([], $response->json('blockers'));
+    }
+
+    public function test_partial_document_set_cannot_reach_gate_c_or_d(): void
+    {
+        $this->seedFullWizard();
+        $project = Project::firstOrFail();
+        $state = $project->draft_state;
+        $state['documents'] = [GenerateController::DOCUMENT_IDS[0] => "# One document\n\n".str_repeat('x', 250)];
+        $project->update(['draft_state' => $state]);
+
+        $response = $this->postJson('/api/validate/run')->assertOk();
+
+        $response->assertJsonPath('gate', 'B');
+        $this->assertNotEmpty($response->json('blockers'));
     }
 
     /**
