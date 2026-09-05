@@ -198,6 +198,201 @@ Alpine.data('phaseAction', ({ endpoint, nextUrl = null, download = false }) => (
     },
 }));
 
+// Generate page: dispatch batch lalu pantau progres.
+// Prioritas SSE (/api/generate/stream); jatuh ke polling /api/generate/status
+// bila SSE gagal (PRD/GENERATION.md §10).
+Alpine.data('generateProgress', () => ({
+    state: 'idle',            // idle | starting | running | done | error
+    documents: [],
+    provider: null,
+    total: 0,
+    completed: 0,
+    failed: 0,
+    error: null,
+    _source: null,
+    _timer: null,
+
+    get percent() {
+        if (!this.total) return 0;
+        return Math.round((this.completed / this.total) * 100);
+    },
+
+    get buttonLabel() {
+        if (this.state === 'starting') return 'Mengirim ke antrean...';
+        if (this.state === 'running') return 'Sedang berjalan...';
+        if (this.state === 'done') return 'Generate ulang';
+        return 'Mulai Generate';
+    },
+
+    async init() {
+        // Muat status awal; kalau batch sudah pernah jalan, tampilkan langsung.
+        const snapshot = await this.fetchStatus();
+        if (snapshot && snapshot.counts) {
+            const started = snapshot.total - (snapshot.counts.pending || 0);
+            if (started > 0) {
+                this.state = snapshot.finished ? 'done' : 'running';
+                if (!snapshot.finished) this.watch();
+            }
+        }
+    },
+
+    async start() {
+        this.state = 'starting';
+        this.error = null;
+
+        try {
+            const response = await fetch('/api/generate/start', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'X-CSRF-TOKEN': csrfToken(),
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json',
+                },
+            });
+            const data = await response.json();
+
+            if (!response.ok) {
+                this.error = data?.error?.message || data?.message || 'Permintaan gagal.';
+                this.state = 'error';
+                return;
+            }
+
+            this.total = data.total || this.total;
+            this.provider = data.provider || this.provider;
+            this.state = 'running';
+            await this.fetchStatus();
+            this.watch();
+        } catch (_) {
+            this.error = 'Gagal terhubung ke server.';
+            this.state = 'error';
+        }
+    },
+
+    async retry(docId) {
+        this.error = null;
+        try {
+            await fetch(`/api/generate/retry/${encodeURIComponent(docId)}`, {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'X-CSRF-TOKEN': csrfToken(),
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json',
+                },
+            });
+            this.state = 'running';
+            this.watch();
+        } catch (_) {
+            this.error = 'Gagal mengirim permintaan ulang.';
+        }
+    },
+
+    // SSE dulu; kalau error, polling.
+    watch() {
+        this.stop();
+
+        if (typeof window.EventSource === 'function') {
+            try {
+                const source = new EventSource('/api/generate/stream', { withCredentials: true });
+                this._source = source;
+
+                source.addEventListener('progress', () => this.fetchStatus());
+                source.addEventListener('error', () => this.fetchStatus());
+                source.addEventListener('complete', () => {
+                    this.fetchStatus().then(() => {
+                        this.state = 'done';
+                        this.stop();
+                    });
+                });
+                source.onerror = () => {
+                    // Koneksi SSE putus/diblokir proxy → fallback polling.
+                    this.stop();
+                    this.poll();
+                };
+                return;
+            } catch (_) {
+                // jatuh ke polling
+            }
+        }
+
+        this.poll();
+    },
+
+    poll() {
+        this.stop();
+        this._timer = setInterval(async () => {
+            const snapshot = await this.fetchStatus();
+            if (!snapshot || snapshot.finished) {
+                this.state = 'done';
+                this.stop();
+            }
+        }, 3000);
+    },
+
+    stop() {
+        if (this._source) {
+            this._source.close();
+            this._source = null;
+        }
+        if (this._timer) {
+            clearInterval(this._timer);
+            this._timer = null;
+        }
+    },
+
+    async fetchStatus() {
+        try {
+            const response = await fetch('/api/generate/status', {
+                credentials: 'same-origin',
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json',
+                },
+            });
+            if (!response.ok) return null;
+
+            const data = await response.json();
+            this.documents = data.documents || [];
+            this.provider = data.provider || this.provider;
+            this.total = data.total || 0;
+            this.completed = (data.counts?.done || 0) + (data.counts?.failed || 0) + (data.counts?.cancelled || 0);
+            this.failed = data.counts?.failed || 0;
+
+            if (data.finished && this.state === 'running') {
+                this.state = 'done';
+                this.stop();
+            }
+
+            return data;
+        } catch (_) {
+            return null;
+        }
+    },
+
+    statusLabel(status) {
+        return {
+            pending: 'Menunggu',
+            queued: 'Antrean',
+            running: 'Proses',
+            done: 'Selesai',
+            failed: 'Gagal',
+            cancelled: 'Dibatalkan',
+        }[status] || status;
+    },
+
+    statusClass(status) {
+        return {
+            done: 'bg-green-100 text-green-800',
+            failed: 'bg-red-100 text-red-800',
+            running: 'bg-blue-100 text-blue-800',
+            queued: 'bg-slate-100 text-slate-700',
+            pending: 'bg-slate-100 text-slate-500',
+            cancelled: 'bg-amber-100 text-amber-800',
+        }[status] || 'bg-slate-100 text-slate-700';
+    },
+}));
+
 // List builder helper (dipakai component form-list)
 Alpine.data('listBuilder', (config = {}) => ({
     items: Array.isArray(config.initial) ? [...config.initial] : [''],

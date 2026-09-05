@@ -147,6 +147,17 @@ class WizardController extends Controller
     }
 
     /**
+     * Start wizard from traditional form submit (POST /wizard/start).
+     */
+    public function startFromWeb(Request $request)
+    {
+        $sessionId = $this->sessionId($request);
+        $this->wizard->createProject($sessionId);
+
+        return redirect('/wizard/step/intake');
+    }
+
+    /**
      * Wizard frame (GET /wizard).
      * Menampilkan step default 'intake'.
      */

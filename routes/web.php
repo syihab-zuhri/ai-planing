@@ -15,7 +15,10 @@ use Illuminate\Support\Facades\Route;
 */
 
 Route::get('/',         [WizardController::class, 'landing']);
+Route::post('/wizard/start', [WizardController::class, 'startFromWeb']);
 Route::get('/about',    [WizardController::class, 'about']);
+Route::get('/archive',  [\App\Http\Controllers\ProjectArchiveController::class, 'index']);
+Route::get('/archive/download/{id}', [\App\Http\Controllers\ProjectArchiveController::class, 'downloadDirect']);
 Route::view('/generate', 'generate');
 Route::view('/validate', 'validate');
 Route::view('/export', 'export');

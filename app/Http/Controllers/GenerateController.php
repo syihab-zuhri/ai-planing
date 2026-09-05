@@ -2,9 +2,11 @@
 
 namespace App\Http\Controllers;
 
+use App\Jobs\GenerateDocumentJob;
 use App\Models\AiJob;
 use App\Models\Project;
 use App\Services\Ai\AiProviderInterface;
+use App\Services\Ai\DocumentGenerator;
 use App\Services\WizardService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -16,11 +18,13 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  *
  * Acuan: PRD/GENERATION.md + API.md §3.
  *
- * Phase 1 backend: dispatch AI jobs ke queue (sync di Phase 1 supaya test
- * mudah). Job akan:
- *   - Memanggil AiProviderInterface untuk tiap dokumen (mock di Phase 1).
- *   - Mencatat audit ke ai_jobs (provider, token_in/out, latency, status).
- *   - Memperbarui project.current_gate saat progress.
+ * Dua mode eksekusi (config `ai.generation.mode`):
+ *   - queue (default produksi): setiap dokumen di-dispatch sebagai
+ *     GenerateDocumentJob ke queue `blueprintforge`. Endpoint kembali 202
+ *     seketika; progres dipantau via /api/generate/status atau SSE.
+ *     Wajib untuk provider sungguhan — 23 dokumen × ~40 detik jauh melewati
+ *     batas proxy_read_timeout Nginx.
+ *   - sync: dokumen digenerate inline dalam request. Dipakai test & debugging.
  */
 class GenerateController extends Controller
 {
@@ -58,50 +62,48 @@ class GenerateController extends Controller
     public function __construct(
         private readonly WizardService $wizard,
         private readonly AiProviderInterface $aiProvider,
+        private readonly DocumentGenerator $generator,
     ) {
     }
 
     /**
      * API-GENERATE-START (POST /api/generate/start).
-     * Dispatch semua 18+ job. Phase 1: jalan synchronous untuk sederhana.
      */
     public function start(Request $request): JsonResponse
     {
         $sessionId = $request->session()->getId();
         $project = $this->wizard->getOrCreate($sessionId);
 
-        // Guard: state wizard minimal harus sudah ada intake.
-        $state = $project->draft_state ?? [];
-        if (empty($state['intake']['project_name'])) {
-            return response()->json([
-                'error' => [
-                    'code'    => 'VALIDATION_FAILED',
-                    'message' => 'Wizard belum lengkap. Selesaikan Step 1-4 terlebih dahulu.',
-                ],
-            ], 422);
+        if (($guard = $this->guardWizardComplete($project)) !== null) {
+            return $guard;
         }
 
         $batchId = (string) Str::uuid();
-        $results = [];
 
-        foreach (self::DOCUMENT_IDS as $docId) {
-            $results[] = $this->runOne($project, $docId);
+        return $this->queueMode()
+            ? $this->startQueued($project, $batchId)
+            : $this->startSync($project, $batchId);
+    }
+
+    /**
+     * API-GENERATE-STATUS (GET /api/generate/status).
+     *
+     * Polling ringan untuk UI: rekap status per dokumen dari ai_jobs +
+     * draft_state.documents. Dipakai juga sebagai fallback bila SSE gagal
+     * (PRD/GENERATION.md §10).
+     */
+    public function status(Request $request): JsonResponse
+    {
+        $sessionId = $request->session()->getId();
+        $project = $this->wizard->getState($sessionId);
+
+        if ($project === null) {
+            return response()->json([
+                'error' => ['code' => 'VALIDATION_FAILED', 'message' => 'Project not found'],
+            ], 404);
         }
 
-        $allSucceeded = count($results) === count(self::DOCUMENT_IDS)
-            && collect($results)->every(fn (array $result) => $result['status'] === 'done');
-
-        if ($allSucceeded) {
-            $project->setGate('B');
-            $project->save();
-        }
-
-        return response()->json([
-            'batch_id'  => $batchId,
-            'project_id'=> $project->id,
-            'total'     => count($results),
-            'results'   => $results,
-        ]);
+        return response()->json($this->progressSnapshot($project));
     }
 
     /**
@@ -124,23 +126,32 @@ class GenerateController extends Controller
             return response()->json(['error' => ['code' => 'VALIDATION_FAILED', 'message' => 'Project not found']], 404);
         }
 
-        $result = $this->runOne($project, $docId);
-        return response()->json($result);
+        if ($this->queueMode()) {
+            $job = $this->createQueuedJob($project, $docId);
+            GenerateDocumentJob::dispatch($project->id, $docId, $job->id);
+
+            return response()->json([
+                'doc_id' => $docId,
+                'status' => 'queued',
+                'job_id' => $job->id,
+            ], 202);
+        }
+
+        return response()->json($this->generator->generate($project, $docId));
     }
 
     /**
      * API-GENERATE-CANCEL (POST /api/generate/cancel).
      *
-     * Phase 1: tidak ada job asynchronous — endpoint ini membatalkan
-     * antrean (no-op di Phase 1). Implementasi lengkap menyusul setelah
-     * queue worker di-deploy.
+     * Menandai job queued/running sebagai cancelled. GenerateDocumentJob
+     * memeriksa status ai_job sebelum memanggil provider, sehingga job yang
+     * belum diambil worker tidak akan menghasilkan panggilan AI.
      */
     public function cancel(Request $request): JsonResponse
     {
         $sessionId = $request->session()->getId();
         $project = $this->wizard->getState($sessionId);
         if ($project) {
-            // Tandai semua queued ai_jobs untuk project ini sebagai cancelled.
             AiJob::where('project_id', $project->id)
                 ->whereIn('status', ['queued', 'running'])
                 ->update(['status' => 'cancelled', 'completed_at' => now()]);
@@ -152,16 +163,10 @@ class GenerateController extends Controller
     /**
      * API-GENERATE-STREAM (GET /api/generate/stream).
      *
-     * SSE endpoint — streams progress events for each completed document,
-     * a final 'complete' event when the batch finishes, and 'error' events
-     * for failures.
+     * Event: progress (per dokumen), complete (akhir batch), error (kegagalan).
      *
-     * Event types:
-     *   - progress: emitted per completed/failed doc  {doc_id, status, current, total}
-     *   - complete: emitted once when all docs processed {project_id, total, done, failed}
-     *   - error:    emitted on fatal/project-level errors {code, message}
-     *
-     * Timeout: 120 seconds max.
+     * Mode queue  → stream MEMANTAU progres worker (tidak memanggil AI sendiri).
+     * Mode sync   → stream menjalankan generate inline, satu event per dokumen.
      */
     public function stream(Request $request): StreamedResponse|JsonResponse
     {
@@ -174,21 +179,198 @@ class GenerateController extends Controller
             ], 404);
         }
 
-        // Guard: state wizard minimal harus sudah ada intake.
-        $state = $project->draft_state ?? [];
-        if (empty($state['intake']['project_name'])) {
-            return response()->json([
-                'error' => [
-                    'code'    => 'VALIDATION_FAILED',
-                    'message' => 'Wizard belum lengkap. Selesaikan Step 1-4 terlebih dahulu.',
-                ],
-            ], 422);
+        if (($guard = $this->guardWizardComplete($project)) !== null) {
+            return $guard;
         }
 
+        return $this->queueMode()
+            ? $this->streamWatch($project)
+            : $this->streamInline($project);
+    }
+
+    /**
+     * Send a single SSE event to the output stream.
+     *
+     * Format: "event: {type}\ndata: {json}\n\n"
+     */
+    public function sendSseEvent(string $event, array $data): void
+    {
+        echo "event: {$event}\n";
+        echo 'data: ' . json_encode($data, JSON_UNESCAPED_UNICODE) . "\n\n";
+
+        // Flush for real HTTP connections (safe no-op if no OB active).
+        if (!app()->runningUnitTests()) {
+            if (ob_get_level()) {
+                ob_flush();
+            }
+            flush();
+        }
+    }
+
+    /**
+     * Run a single document generation — public wrapper so the streaming
+     * closure can reach it.
+     */
+    public function streamRunOne(Project $project, string $docId): array
+    {
+        return $this->generator->generate($project, $docId);
+    }
+
+    /* -------------------------------------------------------------- */
+    /*  Mode: queue                                                   */
+    /* -------------------------------------------------------------- */
+
+    private function startQueued(Project $project, string $batchId): JsonResponse
+    {
+        $results = [];
+
+        foreach (self::DOCUMENT_IDS as $docId) {
+            $job = $this->createQueuedJob($project, $docId);
+            GenerateDocumentJob::dispatch($project->id, $docId, $job->id);
+
+            $results[] = [
+                'doc_id' => $docId,
+                'status' => 'queued',
+                'job_id' => $job->id,
+            ];
+        }
+
+        return response()->json([
+            'batch_id'   => $batchId,
+            'project_id' => $project->id,
+            'mode'       => 'queue',
+            'total'      => count($results),
+            'provider'   => $this->aiProvider->name(),
+            'results'    => $results,
+        ], 202);
+    }
+
+    private function createQueuedJob(Project $project, string $docId): AiJob
+    {
+        return AiJob::create([
+            'project_id' => $project->id,
+            'doc_id'     => $docId,
+            'provider'   => $this->aiProvider->name(),
+            'status'     => 'queued',
+        ]);
+    }
+
+    /**
+     * SSE watcher: polling DB setiap detik dan mengirim event begitu ada
+     * dokumen baru yang selesai/gagal. Berhenti saat semua dokumen terhitung
+     * atau saat batas waktu tercapai (klien boleh reconnect).
+     */
+    private function streamWatch(Project $project): StreamedResponse
+    {
         $controller = $this;
 
         return new StreamedResponse(function () use ($project, $controller) {
-            set_time_limit(120);
+            $maxSeconds = (int) config('ai.generation.stream_timeout_seconds', 900);
+            @set_time_limit($maxSeconds + 30);
+            ignore_user_abort(false);
+
+            $total = count(self::DOCUMENT_IDS);
+            $seen = [];
+            $deadline = microtime(true) + $maxSeconds;
+
+            while (microtime(true) < $deadline) {
+                $jobs = AiJob::where('project_id', $project->id)
+                    ->whereIn('doc_id', self::DOCUMENT_IDS)
+                    ->whereIn('status', ['done', 'failed', 'cancelled'])
+                    ->orderBy('completed_at')
+                    ->get(['doc_id', 'status', 'error_message']);
+
+                foreach ($jobs as $job) {
+                    if (isset($seen[$job->doc_id])) {
+                        continue;
+                    }
+
+                    $seen[$job->doc_id] = $job->status;
+                    $current = count($seen);
+
+                    if ($job->status === 'done') {
+                        $controller->sendSseEvent('progress', [
+                            'doc_id'  => $job->doc_id,
+                            'status'  => 'done',
+                            'current' => $current,
+                            'total'   => $total,
+                        ]);
+                    } else {
+                        $controller->sendSseEvent('error', [
+                            'code'    => 'GENERATION_FAILED',
+                            'message' => (string) ($job->error_message ?? 'Unknown error'),
+                            'doc_id'  => $job->doc_id,
+                            'current' => $current,
+                            'total'   => $total,
+                        ]);
+                    }
+                }
+
+                if (count($seen) >= $total) {
+                    break;
+                }
+
+                if (connection_aborted()) {
+                    return;
+                }
+
+                // Heartbeat comment agar proxy tidak menutup koneksi idle.
+                echo ": keepalive\n\n";
+                if (ob_get_level()) {
+                    ob_flush();
+                }
+                flush();
+
+                sleep(1);
+            }
+
+            $doneCount = count(array_filter($seen, fn ($status) => $status === 'done'));
+
+            $controller->sendSseEvent('complete', [
+                'project_id' => $project->id,
+                'total'      => $total,
+                'done'       => $doneCount,
+                'failed'     => count($seen) - $doneCount,
+                'timeout'    => count($seen) < $total,
+            ]);
+        }, 200, $this->sseHeaders());
+    }
+
+    /* -------------------------------------------------------------- */
+    /*  Mode: sync                                                    */
+    /* -------------------------------------------------------------- */
+
+    private function startSync(Project $project, string $batchId): JsonResponse
+    {
+        $results = [];
+
+        foreach (self::DOCUMENT_IDS as $docId) {
+            $results[] = $this->generator->generate($project, $docId);
+        }
+
+        $allSucceeded = count($results) === count(self::DOCUMENT_IDS)
+            && collect($results)->every(fn (array $result) => $result['status'] === 'done');
+
+        if ($allSucceeded) {
+            $project->setGate('B');
+            $project->save();
+        }
+
+        return response()->json([
+            'batch_id'   => $batchId,
+            'project_id' => $project->id,
+            'mode'       => 'sync',
+            'total'      => count($results),
+            'results'    => $results,
+        ]);
+    }
+
+    private function streamInline(Project $project): StreamedResponse
+    {
+        $controller = $this;
+
+        return new StreamedResponse(function () use ($project, $controller) {
+            @set_time_limit(120);
 
             $total = count(self::DOCUMENT_IDS);
             $current = 0;
@@ -234,7 +416,6 @@ class GenerateController extends Controller
                 }
             }
 
-            // Set Gate B if all succeeded.
             if ($doneCount === $total) {
                 $project->setGate('B');
                 $project->save();
@@ -246,115 +427,110 @@ class GenerateController extends Controller
                 'done'       => $doneCount,
                 'failed'     => $failedCount,
             ]);
-        }, 200, [
+        }, 200, $this->sseHeaders());
+    }
+
+    /* -------------------------------------------------------------- */
+    /*  Internal                                                      */
+    /* -------------------------------------------------------------- */
+
+    private function queueMode(): bool
+    {
+        return config('ai.generation.mode', 'queue') === 'queue';
+    }
+
+    /**
+     * @return array<string,string>
+     */
+    private function sseHeaders(): array
+    {
+        return [
             'Content-Type'      => 'text/event-stream',
             'Cache-Control'     => 'no-cache',
             'Connection'        => 'keep-alive',
             'X-Accel-Buffering' => 'no',
-        ]);
+        ];
     }
 
     /**
-     * Send a single SSE event to the output stream.
-     *
-     * Format: "event: {type}\ndata: {json}\n\n"
+     * Guard: state wizard minimal harus sudah ada intake.
      */
-    public function sendSseEvent(string $event, array $data): void
-    {
-        echo "event: {$event}\n";
-        echo 'data: ' . json_encode($data, JSON_UNESCAPED_UNICODE) . "\n\n";
-
-        // Flush for real HTTP connections (safe no-op if no OB active).
-        if (!app()->runningUnitTests()) {
-            if (ob_get_level()) {
-                ob_flush();
-            }
-            flush();
-        }
-    }
-
-    /**
-     * Run a single document generation — public wrapper around runOne()
-     * so the streaming closure can access it.
-     */
-    public function streamRunOne(Project $project, string $docId): array
-    {
-        return $this->runOne($project, $docId);
-    }
-
-    /* -------------------------------------------------------------- */
-    /*  Internal                                                     */
-    /* -------------------------------------------------------------- */
-
-    /**
-     * Jalankan satu dokumen. Memanggil AiProviderInterface (mock di Phase 1).
-     */
-    private function runOne(Project $project, string $docId): array
-    {
-        $job = AiJob::create([
-            'project_id' => $project->id,
-            'doc_id'     => $docId,
-            'provider'   => $this->aiProvider->name(),
-            'status'     => 'running',
-        ]);
-
-        try {
-            $messages = $this->buildPromptMessages($project, $docId);
-            $response = $this->aiProvider->chat($messages);
-
-            // Simpan ke draft_state.documents.
-            $state = $project->draft_state ?? [];
-            $documents = (array) ($state['documents'] ?? []);
-            $documents[$docId] = $response->content;
-            $state['documents'] = $documents;
-            $project->draft_state = $state;
-            $project->save();
-
-            $job->update([
-                'status'       => 'done',
-                'token_in'     => $response->tokens_in,
-                'token_out'    => $response->tokens_out,
-                'latency_ms'   => $response->latency_ms,
-                'completed_at' => now(),
-            ]);
-
-            return [
-                'doc_id'   => $docId,
-                'status'   => 'done',
-                'tokens_in' => $response->tokens_in,
-                'tokens_out'=> $response->tokens_out,
-                'latency_ms'=> $response->latency_ms,
-            ];
-        } catch (\Throwable $e) {
-            $job->update([
-                'status'        => 'failed',
-                'error_message' => substr($e->getMessage(), 0, 500),
-                'completed_at'  => now(),
-            ]);
-
-            return [
-                'doc_id'  => $docId,
-                'status'  => 'failed',
-                'error'   => substr($e->getMessage(), 0, 200),
-            ];
-        }
-    }
-
-    /**
-     * Susun pesan prompt untuk dokumen tertentu. Placeholder — produksi akan
-     * memakai PLANNING_v3 sebagai system role (lihat PRD/GENERATION §7a).
-     */
-    private function buildPromptMessages(Project $project, string $docId): array
+    private function guardWizardComplete(Project $project): ?JsonResponse
     {
         $state = $project->draft_state ?? [];
-        $context = json_encode([
-            'project_name' => $state['intake']['project_name'] ?? '',
-            'doc_id'       => $docId,
-        ], JSON_UNESCAPED_UNICODE);
+
+        if (empty($state['intake']['project_name'])) {
+            return response()->json([
+                'error' => [
+                    'code'    => 'VALIDATION_FAILED',
+                    'message' => 'Wizard belum lengkap. Selesaikan Step 1-4 terlebih dahulu.',
+                ],
+            ], 422);
+        }
+
+        return null;
+    }
+
+    /**
+     * Rekap progres untuk polling UI.
+     *
+     * @return array<string,mixed>
+     */
+    private function progressSnapshot(Project $project): array
+    {
+        $documents = (array) (($project->draft_state ?? [])['documents'] ?? []);
+
+        // Status terakhir per doc_id (ai_jobs bisa punya beberapa baris karena retry).
+        $latest = [];
+        $jobs = AiJob::where('project_id', $project->id)
+            ->orderBy('created_at')
+            ->get(['doc_id', 'status', 'error_message', 'token_in', 'token_out', 'latency_ms']);
+
+        foreach ($jobs as $job) {
+            $latest[$job->doc_id] = $job;
+        }
+
+        $docs = [];
+        $counts = ['queued' => 0, 'running' => 0, 'done' => 0, 'failed' => 0, 'cancelled' => 0, 'pending' => 0];
+        $tokensIn = 0;
+        $tokensOut = 0;
+
+        foreach (self::DOCUMENT_IDS as $docId) {
+            $job = $latest[$docId] ?? null;
+            $hasContent = isset($documents[$docId]) && trim((string) $documents[$docId]) !== '';
+            $status = $job?->status ?? 'pending';
+
+            // Dokumen sudah tersimpan tapi ai_job tercatat lain → percayai konten.
+            if ($hasContent && $status !== 'done') {
+                $status = 'done';
+            }
+
+            $counts[$status] = ($counts[$status] ?? 0) + 1;
+            $tokensIn += (int) ($job->token_in ?? 0);
+            $tokensOut += (int) ($job->token_out ?? 0);
+
+            $docs[] = [
+                'doc_id'     => $docId,
+                'status'     => $status,
+                'chars'      => $hasContent ? mb_strlen((string) $documents[$docId]) : 0,
+                'error'      => $job->error_message ?? null,
+                'latency_ms' => (int) ($job->latency_ms ?? 0),
+            ];
+        }
+
+        $total = count(self::DOCUMENT_IDS);
 
         return [
-            ['role' => 'system', 'content' => "Generate the {$docId} document following PLANNING_v3 conventions."],
-            ['role' => 'user',   'content' => "Project context: {$context}"],
+            'project_id' => $project->id,
+            'provider'   => $this->aiProvider->name(),
+            'mode'       => $this->queueMode() ? 'queue' : 'sync',
+            'gate'       => $project->current_gate,
+            'total'      => $total,
+            'counts'     => $counts,
+            'finished'   => $counts['done'] + $counts['failed'] + $counts['cancelled'] >= $total,
+            'tokens_in'  => $tokensIn,
+            'tokens_out' => $tokensOut,
+            'documents'  => $docs,
         ];
     }
 }

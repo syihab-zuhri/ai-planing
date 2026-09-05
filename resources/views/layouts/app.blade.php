@@ -35,23 +35,13 @@
 
             {{-- Nav --}}
             <nav class="flex items-center gap-1 sm:gap-2" aria-label="Navigasi utama">
-                <a href="{{ url('/wizard') }}"
-                   class="btn-ghost hidden sm:inline-flex"
-                   @if(request()->is('wizard*')) aria-current="page" @endif>
-                    Wizard
-                </a>
-                <a href="{{ url('/validate') }}"
-                   class="btn-ghost hidden sm:inline-flex"
-                   @if(request()->is('validate*')) aria-current="page" @endif>
-                    Validasi
-                </a>
-                <a href="{{ url('/export') }}"
-                   class="btn-ghost hidden sm:inline-flex"
-                   @if(request()->is('export*')) aria-current="page" @endif>
-                    Export
+                <a href="{{ url('/archive') }}"
+                   class="btn-primary text-xs sm:text-sm px-3 sm:px-4 py-1.5 sm:py-2"
+                   @if(request()->is('archive*')) aria-current="page" @endif>
+                    📁 Arsip & Unduhan
                 </a>
                 <a href="{{ url('/about') }}"
-                   class="btn-ghost hidden sm:inline-flex"
+                   class="btn-ghost text-xs sm:text-sm px-2.5 sm:px-3 py-1.5 sm:py-2"
                    @if(request()->is('about*')) aria-current="page" @endif>
                     Tentang
                 </a>

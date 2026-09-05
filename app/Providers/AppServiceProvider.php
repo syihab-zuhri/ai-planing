@@ -4,7 +4,10 @@ namespace App\Providers;
 
 use App\Logging\SecretRedactionProcessor;
 use App\Services\Ai\AiProviderInterface;
-use App\Services\Ai\MockAiProvider;
+use App\Services\Ai\AiProviderResolver;
+use App\Services\Ai\DocumentGenerator;
+use App\Services\Ai\MarkdownValidator;
+use App\Services\Ai\PromptBuilder;
 use App\Services\InputSanitizer;
 use App\Services\PromptInjectionDetector;
 use App\Services\WizardService;
@@ -17,10 +20,30 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        // Default AI provider: mock. Tukar ke NineRouterProvider setelah
-        // OQ-001 resolved (lihat ENV var AI_PROVIDER_PRIMARY).
+        $this->app->singleton(AiProviderResolver::class);
+
+        // Provider aktif ditentukan config/ai.php (ENV AI_PROVIDER_PRIMARY).
+        // Resolver otomatis turun ke MockAiProvider bila konfigurasi provider
+        // sungguhan belum lengkap, sehingga pipeline tidak pernah mati total.
         $this->app->bind(AiProviderInterface::class, function ($app) {
-            return new MockAiProvider();
+            return $app->make(AiProviderResolver::class)->primary();
+        });
+
+        $this->app->singleton(PromptBuilder::class);
+
+        $this->app->singleton(MarkdownValidator::class, function ($app) {
+            return new MarkdownValidator(
+                (int) config('ai.generation.min_document_chars', 200)
+            );
+        });
+
+        $this->app->bind(DocumentGenerator::class, function ($app) {
+            return new DocumentGenerator(
+                $app->make(AiProviderInterface::class),
+                $app->make(AiProviderResolver::class),
+                $app->make(PromptBuilder::class),
+                $app->make(MarkdownValidator::class),
+            );
         });
 
         // Sanitizer & detector stateless — singleton cukup.
@@ -41,5 +64,9 @@ class AppServiceProvider extends ServiceProvider
         $this->app->make('log')->pushProcessor(
             app(SecretRedactionProcessor::class)
         );
+
+        if ($this->app->environment('production') || str_starts_with((string) config('app.url'), 'https://')) {
+            \Illuminate\Support\Facades\URL::forceScheme('https');
+        }
     }
 }

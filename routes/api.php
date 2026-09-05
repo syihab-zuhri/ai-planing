@@ -39,6 +39,7 @@ Route::middleware('throttle.session:wizard')->prefix('wizard')->group(function (
 // ---------------------------------------------------------------------------
 Route::middleware('throttle.session:generate')->prefix('generate')->group(function () {
     Route::post('/start',         [GenerateController::class, 'start']);
+    Route::get('/status',         [GenerateController::class, 'status']);
     Route::post('/retry/{doc_id}',[GenerateController::class, 'retry'])->where('doc_id', '[A-Za-z0-9_.\\-]+');
     Route::post('/cancel',        [GenerateController::class, 'cancel']);
     Route::get('/stream',         [GenerateController::class, 'stream']);

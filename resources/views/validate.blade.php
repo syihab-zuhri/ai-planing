@@ -20,21 +20,29 @@
 
         <div class="mt-6" aria-live="polite">
             <p x-show="state === 'error'" class="px-4 py-3 rounded-md bg-red-50 text-danger" x-text="error"></p>
-            <div x-show="state === 'success'" class="space-y-4">
+            <div x-show="state === 'success'" class="flex flex-col gap-4">
                 <div class="flex items-center gap-3">
                     <span class="text-sm text-text-muted">Gate hasil:</span>
-                    <span class="inline-flex px-3 py-1 rounded-md bg-primary text-white font-semibold" x-text="result?.gate"></span>
+                    <span class="inline-flex items-center px-2.5 py-1 rounded-sm bg-primary text-white text-sm font-semibold tracking-wide" x-text="result?.gate"></span>
                 </div>
-                <div x-show="result?.blockers?.length" class="px-4 py-3 rounded-md bg-red-50 text-danger">
-                    <p class="font-medium">Blocker</p>
-                    <ul class="mt-2 list-disc pl-5 text-sm"><template x-for="item in result?.blockers || []"><li x-text="item"></li></template></ul>
+                <div x-show="result?.blockers?.length" class="p-4 rounded-md bg-red-50 border border-red-200 text-danger">
+                    <div class="flex items-center gap-2 font-medium">
+                        <span class="size-2 rounded-full bg-danger"></span>
+                        Blocker Terdeteksi
+                    </div>
+                    <ul class="mt-2 list-disc pl-5 text-sm space-y-1"><template x-for="item in result?.blockers || []"><li x-text="item"></li></template></ul>
                 </div>
-                <div x-show="result?.warnings?.length" class="px-4 py-3 rounded-md bg-amber-50 text-amber-800">
-                    <p class="font-medium">Peringatan</p>
-                    <ul class="mt-2 list-disc pl-5 text-sm"><template x-for="item in result?.warnings || []"><li x-text="item"></li></template></ul>
+                <div x-show="result?.warnings?.length" class="p-4 rounded-md bg-amber-50 border border-amber-200 text-amber-800">
+                    <div class="flex items-center gap-2 font-medium">
+                        <span class="size-2 rounded-full bg-amber-500"></span>
+                        Peringatan
+                    </div>
+                    <ul class="mt-2 list-disc pl-5 text-sm space-y-1"><template x-for="item in result?.warnings || []"><li x-text="item"></li></template></ul>
                 </div>
-                <button type="button" class="btn-primary" @click="continueNext"
-                        :disabled="!['B','C','D'].includes(result?.gate)">Lanjut ke Export</button>
+                <div>
+                    <button type="button" class="btn-primary" @click="continueNext"
+                            :disabled="!['B','C','D'].includes(result?.gate)">Lanjut ke Export &rarr;</button>
+                </div>
             </div>
         </div>
     </div>

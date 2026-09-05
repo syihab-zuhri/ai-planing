@@ -37,6 +37,8 @@
         <env name="TELESCOPE_ENABLED" value="false"/>
         <env name="AI_PROVIDER_PRIMARY" value="mock"/>
         <env name="AI_PROVIDER_FALLBACK" value="mock"/>
+        <env name="AI_GENERATION_MODE" value="sync"/>
+        <env name="GEN_BATCH_DELAY_MS" value="0"/>
         <env name="FILESYSTEM_DISK" value="local"/>
         <env name="BROADCAST_CONNECTION" value="log"/>
     </php>

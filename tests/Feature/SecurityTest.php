@@ -120,6 +120,16 @@ class SecurityTest extends TestCase
         $this->assertContains(ValidateCsrfToken::class, $apiGroup);
     }
 
+    public function test_security_headers_are_present(): void
+    {
+        $response = $this->get('/');
+        $response->assertStatus(200);
+        $response->assertHeader('X-Content-Type-Options', 'nosniff');
+        $response->assertHeader('X-Frame-Options', 'SAMEORIGIN');
+        $response->assertHeader('X-XSS-Protection', '1; mode=block');
+        $response->assertHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    }
+
     /**
      * Pull the middleware group definitions off the HTTP kernel via
      * reflection. Laravel 11 stores them on the HTTP Kernel rather

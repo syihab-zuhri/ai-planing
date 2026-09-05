@@ -6,12 +6,23 @@ use Tests\TestCase;
 
 class PhaseTwoUiTest extends TestCase
 {
+    /**
+     * Halaman /generate memakai komponen Alpine `generateProgress`, yang
+     * memegang endpoint start/status/retry di resources/js/app.js (bukan lagi
+     * inline di Blade). Uji keduanya supaya wiring tetap terjaga.
+     */
     public function test_generate_page_is_wired_to_generate_api(): void
     {
         $this->get('/generate')
             ->assertOk()
             ->assertSee('generatePage', false)
-            ->assertSee('/api/generate/start', false);
+            ->assertSee('generateProgress()', false);
+
+        $js = file_get_contents(resource_path('js/app.js'));
+
+        $this->assertStringContainsString("'/api/generate/start'", $js);
+        $this->assertStringContainsString("'/api/generate/status'", $js);
+        $this->assertStringContainsString('/api/generate/retry/', $js);
     }
 
     public function test_validate_page_is_wired_to_validation_api(): void

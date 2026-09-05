@@ -74,7 +74,7 @@ class WizardService
             'project_name'      => $this->cleanShort($data['project_name'] ?? ''),
             'project_goal'      => $this->cleanLong($data['project_goal'] ?? ''),
             'target_users'      => $this->cleanLong($data['target_users'] ?? ''),
-            'known_constraints' => $data['known_constraints'] !== null && $data['known_constraints'] !== ''
+            'known_constraints' => isset($data['known_constraints']) && $data['known_constraints'] !== null && $data['known_constraints'] !== ''
                 ? $this->cleanLong($data['known_constraints'])
                 : null,
         ];

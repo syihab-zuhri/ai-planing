@@ -12,10 +12,14 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware) {
+        $middleware->trustProxies(at: '*');
+
         // Daftarkan alias 'throttle.session' yang membaca kategori via parameter.
         $middleware->alias([
             'throttle.session' => \App\Http\Middleware\ThrottleBySession::class,
         ]);
+
+        $middleware->append(\App\Http\Middleware\SecurityHeaders::class);
 
         // Tambahkan session middleware ke API group agar
         // $request->session()->getId() tersedia di /api/* (SRS §2.1 AuthN).
